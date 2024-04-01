@@ -105,7 +105,7 @@ class GNNModel(BaseModel):
         x = self.end_linear2(x)
         x = x.reshape(b, n, t, 1).transpose(1, 2)
 
-        return x,  mc_loss, o_loss
+        return x
 
     def prepare_edge_index(self, adj_mx):
       

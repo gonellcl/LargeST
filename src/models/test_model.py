@@ -298,3 +298,63 @@ class DoubleQLearningAgent:
         return (q_values_from_Q1 + q_values_from_Q2) / 2
 
         # self.save()
+
+"""
+import torch
+import torch.nn.functional as F
+from torch_geometric.nn import MessagePassing
+import sys
+
+
+
+class GaussianMixtureGNN(MessagePassing):
+    def __init__(self, in_channels, out_channels, K):
+        super(GaussianMixtureGNN, self).__init__(aggr='add')  # Using add aggregation
+        self.K = K  # Number of Gaussian mixtures
+        self.linear = torch.nn.Linear(in_channels, out_channels)
+        self.weight = torch.nn.Parameter(torch.Tensor(K, in_channels, out_channels))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        torch.nn.init.xavier_uniform_(self.weight)
+        self.linear.reset_parameters()
+
+    def forward(self, x, edge_index):
+        x = self.linear(x)
+        x = self.propagate(edge_index, x=x, size=None)  # Message passing
+        if x.dim() >2:
+            x = x.mean(dim=0)
+        return x
+
+    def message(self, x_j):
+        return torch.matmul(x_j, self.weight)
+
+    def update(self, aggr_out):
+        return F.relu(aggr_out)
+
+    def fit(self, data, epochs=100, info=False):
+        criterion = torch.nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.01, weight_decay=5e-4)
+        self.train()
+        for epoch in range(epochs + 1):
+            optimizer.zero_grad()
+            out = self(data.x, data.edge_index)
+            loss = criterion(out[data.train_mask], data.y[data.train_mask])
+            acc = accuracy(out[data.train_mask].argmax(dim=1), data.y[data.train_mask])
+
+            loss.backward()
+            optimizer.step()
+            if epoch % 20 == 0 and info:
+                val_loss = criterion(out[data.val_mask], data.y[data.val_mask])
+                val_acc = accuracy(out[data.val_mask].argmax(dim=1), data.y[data.val_mask])
+                sys.stderr.write(f"\r{epoch:02d}/{epochs:02d} | Loss: {loss:<6.2f} | Tr Acc: {acc*100:3.2f}% | "
+                                 f"Val Loss: {val_loss:<6.2f} | Val Acc: {val_acc*100:3.2f}%")
+                sys.stderr.flush()
+    @torch.no_grad()
+    def test(self, data):
+        self.eval()
+        out = self(data.x, data.edge_index)
+        acc = accuracy(out.argmax(dim=1)[data.test_mask], data.y[data.test_mask])
+        return acc
+
+"""

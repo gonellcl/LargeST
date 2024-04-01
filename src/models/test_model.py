@@ -59,11 +59,9 @@ class GNNModel(BaseModel):
         # Fallback or default initialization for adj_tensor
         if adj_tensor is None:
             # print("Using default identity matrix for adj_tensor.")
-            # Example: Using an identity matrix as a default. Adjust the size as necessary.
             identity_matrix = np.eye(_X.size(1))
             adj_tensor = torch.Tensor(identity_matrix).to(self.gpu)
             # print(f"adj_tensor1{adj_tensor.shape}")
-        # Continue with your forward method...
         x = _X.transpose(1, 3)
         b, f, n, t = x.shape
         x = x.transpose(1, 2).reshape(b * n, f, 1, t)
@@ -110,8 +108,7 @@ class GNNModel(BaseModel):
         return x,  mc_loss, o_loss
 
     def prepare_edge_index(self, adj_mx):
-        # Assuming adj_mx is a sparse COO matrix
-        # Extract row and column indices to represent edges
+      
         row, col = adj_mx.row, adj_mx.col
         edge_index = torch.tensor([row, col], dtype=torch.long)
         return edge_index
@@ -137,7 +134,7 @@ class AdaptiveTileCodingFeatureTransformer:
         self.num_tilings = initial_num_tilings
         self.initial_tiles_per_tiling = initial_tiles_per_tiling
         self.state_space_bounds = state_space_bounds
-        self.adaptation_rate = 0.01  # A rate at which tiles are adapted
+        self.adaptation_rate = 0.01  #  tiles  adapted
         self.tile_width = [(bound[1] - bound[0]) / (initial_tiles_per_tiling - 1) for bound in state_space_bounds]
         self.tiles_per_tiling = [initial_tiles_per_tiling for _ in state_space_bounds]
         self.offsets = self.calculate_offsets()
@@ -153,11 +150,11 @@ class AdaptiveTileCodingFeatureTransformer:
         if states.size == 0:
             print("Warning: 'states' is empty.")
             return
-            # Now perform the variance calculation
+            #  variance calculation
         state_vars = np.var(states, axis=0)
 
         for i, var in enumerate(state_vars):
-            if var > 0.9:  # Thresholds to be defined based on the problem
+            if var > 0.9:  # thresholds to be defined based on the problem
                 self.tiles_per_tiling[i] += self.adaptation_rate
             elif var < 0.2:
                 self.tiles_per_tiling[i] = max(self.initial_tiles_per_tiling,
@@ -167,15 +164,15 @@ class AdaptiveTileCodingFeatureTransformer:
         self.offsets = self.calculate_offsets()
 
     def transform(self, states):
-        # Verify that states is a numpy array with expected shape
+        # verify that states is a numpy array with expected shape
         assert isinstance(states, np.ndarray), "'states' must be a numpy array."
         assert len(states.shape) == 2, "'states' must be 2-dimensional."
 
         """Transforms states into adaptively tile-coded features."""
-        # Update tiles based on the current state
+        # update tiles based on the current state
         self.adapt_tiles(states)
 
-        # Calculate the dimensions of the feature vector
+        # calculate the dimensions of the feature vector
         self.dim = sum(self.tiles_per_tiling) * self.num_tilings
 
         states = np.array(states)
@@ -202,57 +199,45 @@ class TrafficNetworkEnv(Env):
         self.action_space = Discrete(num_actions)
         self.observation_space = Box(low=np.array([bound[0] for bound in state_space_bounds]),
                                      high=np.array([bound[1] for bound in state_space_bounds]))
-        # Initialize state
+        # initalize state
         self.state = self.reset()
 
     def step(self, action):
-        # Apply action to the environment
-        # Implement logic to apply the action and update the environment's state
+        # apply action to the environment
+        # need to implement logic to apply the action and update the environment's state
 
-        # Obtain the new state as graph data
+        # obtain the new state as graph data
         new_state_graph_data = self._get_new_state_graph_data()
 
-        # Calculate reward based on the new state or the action taken
+        # calc reward based on the new state or the action taken
         reward = self._calculate_reward(new_state_graph_data)
 
-        # Check if the episode is done
+        # chk if the episode is done
         done = self._check_done()
 
-        # Optionally, return additional info
+        # return additional info
         info = {}
 
-        # Instead of returning gnn_output, return the raw graph data
+        # instead of returning gnn_output, return the raw graph data
         return new_state_graph_data, reward, done, info
 
     def reset(self):
-        # Reset the state of the environment to an initial state
-        # Implement logic to reset the environment
-
-        # You can also return the initial state graph data
         initial_state_graph_data = self._get_initial_state_graph_data()
         return initial_state_graph_data
 
     def render(self, mode='human'):
-        # Render the environment to the screen or other interface
         pass
 
     def _get_new_state_graph_data(self):
-        # Define how to obtain new state graph data
-        # This should return the current state in a format that the GNN model can process
         pass
 
     def _calculate_reward(self, new_state_graph_data):
-        # Define how to calculate the reward based on the new state or the action taken
-        # This replaces the direct dependence on gnn_output
         pass
 
     def _check_done(self):
-        # Define the termination criterion for an episode
         pass
 
     def _get_initial_state_graph_data(self):
-        # Define how to obtain initial state graph data
-        # This should set up the initial state for the start of an episode
         pass
 
 
@@ -308,11 +293,8 @@ class DoubleQLearningAgent:
         return self.Q1, self.Q2
 
     def get_q_values(self, state):
-        # Assuming state is an index of the Q-table for simplicity
-        # For a more complex state, you might need to transform it appropriately
         q_values_from_Q1 = self.Q1[state]
         q_values_from_Q2 = self.Q2[state]
         return (q_values_from_Q1 + q_values_from_Q2) / 2
 
-        # Optionally, save the final Q-table
         # self.save()

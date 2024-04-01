@@ -73,74 +73,74 @@ class TestEngine(BaseEngine):
         self.model.load_state_dict(torch.load(
             os.path.join(save_path, filename)))
 
-    def train_batch(self):
-        self.model.train()
-
-        train_loss = []
-        train_mape = []
-        train_rmse = []
-        self._dataloader['train_loader'].shuffle()
-        for X, label in self._dataloader['train_loader'].get_iterator():
-            self._optimizer.zero_grad()
-
-            # Adjusted to capture mc_loss and o_loss
-            X, label = self._to_device(self._to_tensor([X, label]))
-            pred, mc_loss, o_loss = self.model(X)  # Assume label is not needed for forward pass
-            pred, label = self._inverse_transform([pred, label])
-
-            loss = self._loss_fn(pred, label)  # Main loss calculation
-            # Combine losses (customize weights as needed)
-            total_loss = loss + mc_loss + o_loss
-
-            total_loss.backward()
-            if self._clip_grad_value != 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
-            self._optimizer.step()
-
-            train_loss.append(loss.item())  # Possibly adjust this to total_loss if needed
-            # Additional metrics calculations remain unchanged
-            # ...
-
-        return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
-
     # def train_batch(self):
     #     self.model.train()
-    #
+
     #     train_loss = []
     #     train_mape = []
     #     train_rmse = []
     #     self._dataloader['train_loader'].shuffle()
     #     for X, label in self._dataloader['train_loader'].get_iterator():
     #         self._optimizer.zero_grad()
-    #
-    #         # X (b, t, n, f), label (b, t, n, 1)
+
+    #         # Adjusted to capture mc_loss and o_loss
     #         X, label = self._to_device(self._to_tensor([X, label]))
-    #         pred = self.model(X, label)
+    #         pred, mc_loss, o_loss = self.model(X)  # Assume label is not needed for forward pass
     #         pred, label = self._inverse_transform([pred, label])
-    #
-    #         # handle the precision issue when performing inverse transform to label
-    #         mask_value = torch.tensor(0)
-    #         if label.min() < 1:
-    #             mask_value = label.min()
-    #         if self._iter_cnt == 0:
-    #             print('Check mask value', mask_value)
-    #
-    #         loss = self._loss_fn(pred, label, mask_value)
-    #         mape = masked_mape(pred, label, mask_value).item()
-    #         rmse = masked_rmse(pred, label, mask_value).item()
-    #
-    #         loss.backward()
+
+    #         loss = self._loss_fn(pred, label)  # Main loss calculation
+    #         # Combine losses (customize weights as needed)
+    #         total_loss = loss + mc_loss + o_loss
+
+    #         total_loss.backward()
     #         if self._clip_grad_value != 0:
     #             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
     #         self._optimizer.step()
-    #
-    #         train_loss.append(loss.item())
-    #         train_mape.append(mape)
-    #         train_rmse.append(rmse)
-    #
-    #         self._iter_cnt += 1
+
+    #         train_loss.append(loss.item())  # Possibly adjust this to total_loss if needed
+    #         # Additional metrics calculations remain unchanged
+    #         # ...
+
     #     return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
-    #
+
+    def train_batch(self):
+        self.model.train()
+    
+        train_loss = []
+        train_mape = []
+        train_rmse = []
+        self._dataloader['train_loader'].shuffle()
+        for X, label in self._dataloader['train_loader'].get_iterator():
+            self._optimizer.zero_grad()
+    
+            # X (b, t, n, f), label (b, t, n, 1)
+            X, label = self._to_device(self._to_tensor([X, label]))
+            pred = self.model(X, label)
+            pred, label = self._inverse_transform([pred, label])
+    
+            # handle the precision issue when performing inverse transform to label
+            mask_value = torch.tensor(0)
+            if label.min() < 1:
+                mask_value = label.min()
+            if self._iter_cnt == 0:
+                print('Check mask value', mask_value)
+    
+            loss = self._loss_fn(pred, label, mask_value)
+            mape = masked_mape(pred, label, mask_value).item()
+            rmse = masked_rmse(pred, label, mask_value).item()
+    
+            loss.backward()
+            if self._clip_grad_value != 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
+            self._optimizer.step()
+    
+            train_loss.append(loss.item())
+            train_mape.append(mape)
+            train_rmse.append(rmse)
+    
+            self._iter_cnt += 1
+        return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
+    
 
     def train(self):
         self._logger.info('Start training!')

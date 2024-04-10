@@ -3,9 +3,10 @@ import torch.nn as nn
 from torch_geometric.nn import GMMConv, dense_mincut_pool
 import torch.nn.functional as F
 from src.utils.graph_algo import normalize_adj_mx
+from src.base.model import BaseModel
 
 
-class GMGNN(nn.Module):
+class GMGNN(BaseModel):
     def __init__(self, input_dim, h_dim, output_dim, adj_mx, num_clusters):
         super(GMGNN, self).__init__()
         self.input_dim = input_dim

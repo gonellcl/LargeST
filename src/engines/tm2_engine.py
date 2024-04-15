@@ -73,97 +73,97 @@ class TestEngine(BaseEngine):
         self.model.load_state_dict(torch.load(
             os.path.join(save_path, filename)))
 
-    def train_batch(self):
-        self.model.train()
-
-        train_loss = []
-        train_mape = []
-        train_rmse = []
-        mc_losses = []  # To store mincut losses
-        o_losses = []  # To store orthogonality losses
-
-        self._dataloader['train_loader'].shuffle()
-        for X, label in self._dataloader['train_loader'].get_iterator():
-            self._optimizer.zero_grad()
-
-            # X (b, t, n, f), label (b, t, n, 1)
-            X, label = self._to_device(self._to_tensor([X, label]))
-            pred, mc_loss, o_loss = self.model(X)  # Adjusted to receive mc_loss and o_loss
-
-            pred, label = self._inverse_transform([pred, label])
-
-            # Handle the precision issue when performing inverse transform to label
-            mask_value = torch.tensor(0)
-            if label.min() < 1:
-                mask_value = label.min()
-            if self._iter_cnt == 0:
-                print('Check mask value', mask_value)
-
-            main_loss = self._loss_fn(pred, label, mask_value)
-            total_loss = main_loss + mc_loss + o_loss  # Combine losses
-
-            total_loss.backward()
-            if self._clip_grad_value != 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
-            self._optimizer.step()
-
-            train_loss.append(main_loss.item())  # Use main_loss for reporting if needed
-            mc_losses.append(mc_loss.item())
-            o_losses.append(o_loss.item())
-            train_mape.append(masked_mape(pred, label, mask_value).item())
-            train_rmse.append(masked_rmse(pred, label, mask_value).item())
-
-            self._iter_cnt += 1
-
-        avg_main_loss = np.mean(train_loss)
-        avg_mc_loss = np.mean(mc_losses)
-        avg_o_loss = np.mean(o_losses)
-        avg_mape = np.mean(train_mape)
-        avg_rmse = np.mean(train_rmse)
-
-        # Log combined and individual losses
-        print(
-            f"Average Main Loss: {avg_main_loss}, Average Mincut Loss: {avg_mc_loss}, Average Orthogonality Loss: {avg_o_loss}")
-
-        return avg_main_loss, avg_mape, avg_rmse
-
     # def train_batch(self):
     #     self.model.train()
-    #
+
     #     train_loss = []
     #     train_mape = []
     #     train_rmse = []
+    #     mc_losses = []  # To store mincut losses
+    #     o_losses = []  # To store orthogonality losses
+
     #     self._dataloader['train_loader'].shuffle()
     #     for X, label in self._dataloader['train_loader'].get_iterator():
     #         self._optimizer.zero_grad()
-    #
+
     #         # X (b, t, n, f), label (b, t, n, 1)
     #         X, label = self._to_device(self._to_tensor([X, label]))
-    #         pred = self.model(X, label)
+    #         pred, mc_loss, o_loss = self.model(X)  # Adjusted to receive mc_loss and o_loss
+
     #         pred, label = self._inverse_transform([pred, label])
-    #
-    #         # handle the precision issue when performing inverse transform to label
+
+    #         # Handle the precision issue when performing inverse transform to label
     #         mask_value = torch.tensor(0)
     #         if label.min() < 1:
     #             mask_value = label.min()
     #         if self._iter_cnt == 0:
     #             print('Check mask value', mask_value)
-    #
-    #         loss = self._loss_fn(pred, label, mask_value)
-    #         mape = masked_mape(pred, label, mask_value).item()
-    #         rmse = masked_rmse(pred, label, mask_value).item()
-    #
-    #         loss.backward()
+
+    #         main_loss = self._loss_fn(pred, label, mask_value)
+    #         total_loss = main_loss + mc_loss + o_loss  # Combine losses
+
+    #         total_loss.backward()
     #         if self._clip_grad_value != 0:
     #             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
     #         self._optimizer.step()
-    #
-    #         train_loss.append(loss.item())
-    #         train_mape.append(mape)
-    #         train_rmse.append(rmse)
-    #
+
+    #         train_loss.append(main_loss.item())  # Use main_loss for reporting if needed
+    #         mc_losses.append(mc_loss.item())
+    #         o_losses.append(o_loss.item())
+    #         train_mape.append(masked_mape(pred, label, mask_value).item())
+    #         train_rmse.append(masked_rmse(pred, label, mask_value).item())
+
     #         self._iter_cnt += 1
-    #     return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
+
+    #     avg_main_loss = np.mean(train_loss)
+    #     avg_mc_loss = np.mean(mc_losses)
+    #     avg_o_loss = np.mean(o_losses)
+    #     avg_mape = np.mean(train_mape)
+    #     avg_rmse = np.mean(train_rmse)
+
+    #     # Log combined and individual losses
+    #     print(
+    #         f"Average Main Loss: {avg_main_loss}, Average Mincut Loss: {avg_mc_loss}, Average Orthogonality Loss: {avg_o_loss}")
+
+    #     return avg_main_loss, avg_mape, avg_rmse
+
+    def train_batch(self):
+        self.model.train()
+    
+        train_loss = []
+        train_mape = []
+        train_rmse = []
+        self._dataloader['train_loader'].shuffle()
+        for X, label in self._dataloader['train_loader'].get_iterator():
+            self._optimizer.zero_grad()
+    
+            # X (b, t, n, f), label (b, t, n, 1)
+            X, label = self._to_device(self._to_tensor([X, label]))
+            pred = self.model(X, label)
+            pred, label = self._inverse_transform([pred, label])
+    
+            # handle the precision issue when performing inverse transform to label
+            mask_value = torch.tensor(0)
+            if label.min() < 1:
+                mask_value = label.min()
+            if self._iter_cnt == 0:
+                print('Check mask value', mask_value)
+    
+            loss = self._loss_fn(pred, label, mask_value)
+            mape = masked_mape(pred, label, mask_value).item()
+            rmse = masked_rmse(pred, label, mask_value).item()
+    
+            loss.backward()
+            if self._clip_grad_value != 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
+            self._optimizer.step()
+    
+            train_loss.append(loss.item())
+            train_mape.append(mape)
+            train_rmse.append(rmse)
+    
+            self._iter_cnt += 1
+        return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
 
     def train(self):
         self._logger.info('Start training!')

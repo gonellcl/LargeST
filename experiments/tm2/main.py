@@ -16,7 +16,7 @@ from src.utils.args import get_public_config
 from src.utils.dataloader import load_dataset, get_dataset_info, load_adj_from_numpy
 from src.utils.metrics import masked_mae
 from src.utils.logging import get_logger
-
+from src.utils.graph_algo import normalize_adj_mx
 
 def set_seed(seed):
     np.random.seed(seed)

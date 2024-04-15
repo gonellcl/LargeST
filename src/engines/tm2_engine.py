@@ -79,29 +79,53 @@ class TestEngine(BaseEngine):
         train_loss = []
         train_mape = []
         train_rmse = []
+        mc_losses = []  # To store mincut losses
+        o_losses = []  # To store orthogonality losses
+
         self._dataloader['train_loader'].shuffle()
         for X, label in self._dataloader['train_loader'].get_iterator():
             self._optimizer.zero_grad()
 
-            # Adjusted to capture mc_loss and o_loss
+            # X (b, t, n, f), label (b, t, n, 1)
             X, label = self._to_device(self._to_tensor([X, label]))
-            pred, mc_loss, o_loss = self.model(X)  # Assume label is not needed for forward pass
+            pred, mc_loss, o_loss = self.model(X)  # Adjusted to receive mc_loss and o_loss
+
             pred, label = self._inverse_transform([pred, label])
 
-            loss = self._loss_fn(pred, label)  # Main loss calculation
-            # Combine losses (customize weights as needed)
-            total_loss = loss + mc_loss + o_loss
+            # Handle the precision issue when performing inverse transform to label
+            mask_value = torch.tensor(0)
+            if label.min() < 1:
+                mask_value = label.min()
+            if self._iter_cnt == 0:
+                print('Check mask value', mask_value)
+
+            main_loss = self._loss_fn(pred, label, mask_value)
+            total_loss = main_loss + mc_loss + o_loss  # Combine losses
 
             total_loss.backward()
             if self._clip_grad_value != 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
             self._optimizer.step()
 
-            train_loss.append(loss.item())  # Possibly adjust this to total_loss if needed
-            # Additional metrics calculations remain unchanged
-            # ...
+            train_loss.append(main_loss.item())  # Use main_loss for reporting if needed
+            mc_losses.append(mc_loss.item())
+            o_losses.append(o_loss.item())
+            train_mape.append(masked_mape(pred, label, mask_value).item())
+            train_rmse.append(masked_rmse(pred, label, mask_value).item())
 
-        return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
+            self._iter_cnt += 1
+
+        avg_main_loss = np.mean(train_loss)
+        avg_mc_loss = np.mean(mc_losses)
+        avg_o_loss = np.mean(o_losses)
+        avg_mape = np.mean(train_mape)
+        avg_rmse = np.mean(train_rmse)
+
+        # Log combined and individual losses
+        print(
+            f"Average Main Loss: {avg_main_loss}, Average Mincut Loss: {avg_mc_loss}, Average Orthogonality Loss: {avg_o_loss}")
+
+        return avg_main_loss, avg_mape, avg_rmse
 
     # def train_batch(self):
     #     self.model.train()
@@ -140,7 +164,6 @@ class TestEngine(BaseEngine):
     #
     #         self._iter_cnt += 1
     #     return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
-    #
 
     def train(self):
         self._logger.info('Start training!')
@@ -162,9 +185,7 @@ class TestEngine(BaseEngine):
                 cur_lr = self._lr_scheduler.get_last_lr()[0]
                 self._lr_scheduler.step()
 
-            message = 'Epoch: {:03d}, Train Loss: {:.4f}, Train RMSE: {:.4f}, Train MAPE: {:.4f}, Valid Loss: {:.4f}, ' \
-                      'Valid RMSE: {:.4f}, Valid MAPE: {:.4f}, Train Time: {:.4f}s/epoch, Valid Time: {:.4f}s, ' \
-                      'LR: {:.4e} '
+            message = 'Epoch: {:03d}, Train Loss: {:.4f}, Train RMSE: {:.4f}, Train MAPE: {:.4f}, Valid Loss: {:.4f}, Valid RMSE: {:.4f}, Valid MAPE: {:.4f}, Train Time: {:.4f}s/epoch, Valid Time: {:.4f}s, LR: {:.4e}'
             self._logger.info(message.format(epoch + 1, mtrain_loss, mtrain_rmse, mtrain_mape, \
                                              mvalid_loss, mvalid_rmse, mvalid_mape, \
                                              (t2 - t1), (v2 - v1), cur_lr))
@@ -228,3 +249,4 @@ class TestEngine(BaseEngine):
 
             log = 'Average Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}'
             self._logger.info(log.format(np.mean(test_mae), np.mean(test_rmse), np.mean(test_mape)))
+

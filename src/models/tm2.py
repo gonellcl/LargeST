@@ -95,7 +95,7 @@ class GMGNN(BaseModel):
         print(f"x final linear transform shape {x.shape}")
         x = x.view(b, n, t, 1).permute(0, 2, 1, 3)  # Correct output shape
 
-        return x, mc_loss, o_loss
+        return x
 
 
 def manual_dense_to_sparse(new_adj):

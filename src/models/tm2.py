@@ -6,9 +6,8 @@ from src.utils.graph_algo import normalize_adj_mx
 from src.base.model import BaseModel
 
 
-
 class GMGNN(BaseModel):
-    def __init__(self, init_dim, h_dim, adj_mx, num_clusters, end_dim, layer, dropout,device,  **args):
+    def __init__(self, init_dim, h_dim, adj_mx, num_clusters, end_dim, layer, dropout, device, **args):
         super(GMGNN, self).__init__(**args)
         self.device = device
 
@@ -31,11 +30,14 @@ class GMGNN(BaseModel):
             nn.ReLU(),
             nn.Linear(self.h_dim, self.num_clusters).to(self.device)
         )
-        self.lstm = nn.LSTM(input_size=1, hidden_size=self.h_dim, num_layers=layer, batch_first=True, dropout=dropout).to(self.device)
-        self.end_linear1 = nn.Linear(h_dim, end_dim).to(self.device)
-        self.end_linear2 = nn.Linear(end_dim, self.node_num * self.horizon).to(self.device)
+        self.lstm = nn.LSTM(input_size=2, hidden_size=h_dim*self.node_num  , num_layers=layer, batch_first=True, dropout=dropout).to(
+            self.device)
+        self.lstm.flatten_parameters()  # Ensure parameters are contiguous post-initialization
 
-    def forward(self, x, labels=None, edge_index=None, edge_attr=None):
+        self.end_linear1 = nn.Linear(h_dim *self.node_num  , end_dim).to(self.device)
+        self.end_linear2 = nn.Linear(end_dim, self.horizon).to(self.device)
+
+    def forward(self, x, edge_index=None, edge_attr=None):
         x = x.to(self.device)
         b, t, n, f = x.shape
         print(f"Initial shape of x: {x.shape}")
@@ -64,7 +66,7 @@ class GMGNN(BaseModel):
         print(f"new_x shape post-pooling: {new_x.shape}, new_adj shape: {new_adj.shape}")
         new_edge_index, new_edge_attr = manual_dense_to_sparse(new_adj)
 
-         # changed from .unsqueeze(-1) which can be an in-place operation
+        # changed from .unsqueeze(-1) which can be an in-place operation
         print(f"new edge index {new_edge_index.shape}")
         print(f"new edge attr {new_edge_attr.shape}")
 
@@ -75,25 +77,28 @@ class GMGNN(BaseModel):
         print(f"new_x shape post-GMM2: {new_x.shape}")
 
         # Reshape for LSTM processing
-        new_x = new_x.view(b, self.num_clusters, -1)  # Correctly align sequences with num_clusters
+        new_x = new_x.view(b, t, -1).squeeze()  # Correctly align sequences with num_clusters
         print(f"new_x reshaped for LSTM: {new_x.shape}")
 
         # LSTM processing
-        out, _ = self.lstm(new_x)
-        print(f"lstm prerprocess {out.shape}")
+        self.lstm.flatten_parameters()  # Ensure parameters are contiguous post-initialization
 
-        # Adjust LSTM outputs for end linear layers
+        out, _ = self.lstm(new_x)
+        print(f"lstm after {out.shape}")
+        self.lstm.flatten_parameters()  # Ensure parameters are contiguous post-initialization
+
         x = out[:, -1, :]  # Taking the last timestep's output
-        print(f"Last timestep output shape: {x.shape}")
+        print(f"After  out shape: {x.shape}")
 
         x = F.relu(self.end_linear1(x))
         print(f"After end linear 1 shape: {x.shape}")
 
         x = self.end_linear2(x)
-        print(f"After end linear 2 shape: {x.shape}")  # Now [8, 716*12]
+        print(f"After end linear 2 shape: {x.shape}")  
 
-        print(f"x final linear transform shape {x.shape}")
         x = x.view(b, n, t, 1).permute(0, 2, 1, 3)  # Correct output shape
+
+        print(f"After end  shape: {x.shape}")  
 
         return x
 
@@ -106,12 +111,11 @@ def manual_dense_to_sparse(new_adj):
     for i in range(b):
         for j in range(n):
             for k in range(n):
-                if new_adj[i, j, k] != 0:  
+                if new_adj[i, j, k] != 0:
                     edges.append([j, k])
-                    edge_attrs.append([new_adj[i, j, k]])  #list to maintain 2nd dim
+                    edge_attrs.append([new_adj[i, j, k]])  # list to maintain 2nd dim
 
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous().to(new_adj.device)
     edge_attr = torch.tensor(edge_attrs, dtype=new_adj.dtype).to(new_adj.device)  # Shape will be (E, 1)
 
     return edge_index, edge_attr
-

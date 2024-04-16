@@ -39,7 +39,7 @@ def get_config():
     parser.add_argument('--end_dim', type=int, default=512)
 
     parser.add_argument('--num_clusters', type=int, default=96)
-    parser.add_argument('--filter_type', type=str, default='doubletransition')
+    parser.add_argument('--filter_type', type=str, default='transition')
 
     # parser.add_argument('--seq_len', type=int, default=64)
     # parser.add_argument('--horizon', type=int, default=512)
@@ -72,7 +72,7 @@ def main():
     for n in range(node_num):
         idx = np.nonzero(adj_mx[n])[0]
         adj_mx[n, idx] = 1
-    adj_mx = normalize_adj_mx(adj_mx, 'scalap')[0]
+    adj_mx = normalize_adj_mx(adj_mx, 'transition')[0]
     adj_mx = torch.tensor(adj_mx).to(device)
 
     logger.info(f'Shape of Adj_Matrix {adj_mx.shape}')

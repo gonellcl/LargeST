@@ -11,6 +11,24 @@ import torch.optim as optim
 from abc import abstractmethod
 from src.base.model import BaseModel
 from src.utils.graph_algo import normalize_adj_mx
+from scipy.sparse import coo_matrix, diags
+
+
+def normalize_adjacency_matrix(adj):
+    if not isinstance(adj, coo_matrix):
+        adj = coo_matrix(adj)
+    rowsum = np.array(adj.sum(1))
+    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
+    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
+    d_mat_inv_sqrt = diags(d_inv_sqrt)
+    norm_adj = adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
+    return norm_adj
+
+
+def prepare_edge_index(adj_mx):
+    row, col = adj_mx.row, adj_mx.col
+    edge_index = torch.tensor([row, col], dtype=torch.long)
+    return edge_index
 
 
 class GNNModel(BaseModel):
@@ -18,6 +36,8 @@ class GNNModel(BaseModel):
                  tiles_per_tiling, adj_mx, **args):
         super(GNNModel, self).__init__(**args)
         # Existing GNNModel initialization code
+        self.gpu = torch.device('cuda:0')
+
         self.env = TrafficNetworkEnv(num_actions=10, state_space_bounds=[(-1, 1), (-1, 1), (-1, 1)])  # Updated bounds
         self.ddqn_agent = DoubleQLearningAgent(state_size=self.env.observation_space.shape[0],
                                                action_size=self.env.action_space.n)
@@ -25,93 +45,151 @@ class GNNModel(BaseModel):
         # Initialize the Adaptive Tile Coding Feature Transformer
         self.tile_coding = AdaptiveTileCodingFeatureTransformer(num_tilings, tiles_per_tiling,
                                                                 [(-1, 1), (-1, 1), (-1, 1)])  # Updated bounds
+        self.adj_mx = normalize_adjacency_matrix(adj_mx)
+        self.adj_mx = torch.FloatTensor(self.adj_mx.toarray()).to(self.gpu)  # Convert to dense and then to Tensor
 
-        # self.assignment_matrix = AssignmentMatrix(self.input_dim, num_clusters)
-        self.adj_mx = normalize_adj_mx(adj_mx, adj_type='symadj', return_type='coo')
-        self.conv = nn.Conv2d(in_channels=self.input_dim, out_channels=self.input_dim, kernel_size=(1, 1))
+        self.conv = nn.Conv2d(in_channels=hid_dim, out_channels=end_dim, kernel_size=(1, 1))
 
         self.lin1 = nn.Linear(self.input_dim, self.output_dim)
-        self.end_conv = nn.Conv2d(1, self.horizon * self.output_dim, kernel_size=(1, 1), bias=True)
+        self.end_conv = nn.Conv2d(self.output_dim, self.horizon, kernel_size=(1, 1), bias=True)
 
-        self.assignment_matrix = nn.Linear(self.output_dim,
-                                           num_clusters)  # To compute assignments for dense_minicut_pool
-        self.gpu = torch.device('cuda:0')
-        self.start_conv = nn.Conv2d(in_channels=1, out_channels=init_dim, kernel_size=(1, 1))
+        # self.assignment_matrix = nn.Linear(self.output_dim,
+        self.mlp = nn.Sequential(
+            nn.Linear(self.horizon * hid_dim, hid_dim),
+            nn.ReLU(),
+            nn.Linear(hid_dim, hid_dim)
+        )
+        # To compute assignments for dense_minicut_pool
+        self.start_conv = nn.Conv2d(in_channels=self.input_dim, out_channels=hid_dim, kernel_size=(1, 1))
 
         self.lstm = nn.LSTM(input_size=init_dim, hidden_size=hid_dim, num_layers=layer, batch_first=True,
                             dropout=dropout)
 
-        self.end_linear1 = nn.Linear(hid_dim, end_dim)
-        self.end_linear2 = nn.Linear(end_dim, self.horizon)
+        self.end_linear2 = nn.Linear(hid_dim, self.horizon)
 
-    def forward(self, _X, _edge_ix=None):  # (b, t, n, f)
-        batch_size, features, num_nodes, time_steps = _X.shape
+    def forward(self, _X, _edge_ix=None):
+        b, t, n, f = _X.shape  # batch, time steps, nodes, features
+        print(_X.shape)
+        if _edge_ix is None:
+            edge_index = prepare_edge_index(self.adj_mx)  # Fallback to precomputed edges
+        else:
+            edge_index = _edge_ix  # Using provided edge indices
 
-        adj_tensor = None  # Default to None
-        # Try initializing adj_tensor from self.adj_mx if _edge_ix is None
-        if _edge_ix is None and len(self.adj_mx) > 0:
-            try:
-                adj_dense = self.adj_mx[1].todense()  # Convert COO to dense
-                adj_tensor = torch.Tensor(adj_dense).to(self.gpu)
-            except AttributeError:
-                print("self.adj_mx may not be in the expected format. Ensure it's a COO matrix.")
+        # Moving features to the channel dimension (channels, height, width)
+        x = _X.permute(0, 3, 2, 1)  # (b, f, n, t)
+        print(x.shape)
 
-        # Fallback or default initialization for adj_tensor
-        if adj_tensor is None:
-            # print("Using default identity matrix for adj_tensor.")
-            identity_matrix = np.eye(_X.size(1))
-            adj_tensor = torch.Tensor(identity_matrix).to(self.gpu)
-            # print(f"adj_tensor1{adj_tensor.shape}")
-        x = _X.transpose(1, 3)
-        b, f, n, t = x.shape
-        x = x.transpose(1, 2).reshape(b * n, f, 1, t)
-        # print(f"x1: {x.shape}") # x1: torch.Size([22912, 3, 1, 12])
+        # Convolution expects (batch, channel, height, width)
+        x = self.start_conv(x)  # Apply conv2d
+        print(x.shape)
 
-        x = self.conv(x).squeeze().transpose(1, 2)  # x2: torch.Size([22912, 12, 3])
+        x = F.relu(x)  # Activation
+        print(x.shape)
 
-        # print(f"x2: {x.shape}")
+        # For MLP and MinCut Pool, reshape x to collapse all features into one dimension per node
+        x = x.permute(0, 2, 1, 3).reshape(b * n, -1)  # Reshape to (b*n, hid_dim*t)
+        print(x.shape)
 
-        h = F.relu(self.lin1(x))
+        # Generating soft assignment matrix (S)
+        S_logits = self.mlp(x)  # MLP processes flattened features
+        print(S_logits.shape)
+        S = F.softmax(S_logits, dim=1).view(b, n, -1)
+        print(S.shape)
+        # Prepare adjacency matrix and ensure it's on the correct device and in the correct format
+        adj = self.adj_mx if self.adj_mx.device == x.device else self.adj_mx.to(x.device)
+        print(adj.shape)
+        # Need to match dimensions for dense_mincut_pool: expected (batch, nodes, features)
+        x = x.view(b, n, -1)
+        print(x.shape)
 
-        # print(f"h shape {h.shape}")
+        # Applying dense mincut pool
+        new_x, new_adj, mc_loss, o_loss = dense_mincut_pool(x, adj, S)
+        print(new_x.shape)
+        # Reshape for LSTM, ensuring it's (batch, sequence, features)
+        new_x = new_x.view(b, t, n, -1).permute(0, 2, 1, 3)
+        print(new_x.shape)
 
-        S = F.softmax(self.assignment_matrix(h), dim=1)
-        # print(f"S shape {S.shape}")
+        x = x.permute(0, 2, 1, 3).reshape(b * n, t, -1)  # Shape (batch*nodes, time, features)
 
-        # Proceed to call dense_mincut_pool
-        new_h, new_adj, mc_loss, o_loss = dense_mincut_pool(h, adj_tensor, S)
+        print(x.shape)
 
-        transformed_new_h = new_h.view(-1, 1, 32, 1)  # Adjusting dimensions to fit the conv layer's expectations
-
-        # Now, pass the transformed_new_h to the convolutional layer
-        pred = self.end_conv(transformed_new_h)
-        num_nodes = pred.shape[0] // batch_size
-        pred = pred.reshape(batch_size, num_nodes, -1, pred.shape[3])
-        pred = pred.permute(0, 2, 1, 3)
-        pred_reshaped = pred.reshape(32, 12, 32, 716, 1)
-        pred_updated = pred_reshaped.mean(dim=2)
-
-        # print(f"pred shape {pred_updated.shape}")
-        x = pred_updated.transpose(1, 3)
-        b, f, n, t = x.shape
-
-        x = x.transpose(1, 2).reshape(b * n, f, 1, t)
-        x = self.start_conv(x).squeeze().transpose(1, 2)
-
+        # Processing with LSTM
         out, _ = self.lstm(x)
-        x = out[:, -1, :]
+        x = out[:, -1, :]  # Taking the last timestep's output
+        print(x.shape)
 
-        x = F.relu(self.end_linear1(x))
         x = self.end_linear2(x)
-        x = x.reshape(b, n, t, 1).transpose(1, 2)
+        print(x.shape)
+
+        # Correctly reshape the output to match the expected format
+        x = x.view(b, n, self.horizon)  # (batch, time, nodes, features)
+        print(x.shape)
 
         return x
 
-    def prepare_edge_index(self, adj_mx):
-      
-        row, col = adj_mx.row, adj_mx.col
-        edge_index = torch.tensor([row, col], dtype=torch.long)
-        return edge_index
+    # def forward(self, _X, _edge_ix=None):  # (b, t, n, f)
+    #     b, t, n, f = _X.shape
+    #
+    #     if _edge_ix is None:
+    #         edge_index = prepare_edge_index(self.adj_mx)
+    #
+    #     else:
+    #         edge_index = _edge_ix
+    #     # Move features to the channel dimension (PyTorch Conv2d expects batch_size, channels, height, width)
+    #     x = _X.permute(0, 3, 2, 1)  # now x is (b, f, n, t) where f is the number of features (channels)
+    #
+    #     print(f"Initial x shape: {x.shape}")  # Debug print to show x shape after permutation
+    #     x = self.start_conv(x)
+    #     x = F.relu(x)
+    #     print(f"Shape of x after start_conv: {x.shape}")
+    #
+    #     x = x.permute(0, 2, 3, 1)  # Revert to (batch, nodes, time_steps, features) for MLP
+    #     x = x.reshape(b * n, -1)  # Flatten for MLP input
+    #
+    #     print(f"Shape of x for MLP: {x.shape}")
+    #
+    #     # Process with MLP
+    #     S_logits = self.mlp(x)
+    #     S = F.softmax(S_logits, dim=1).view(b, n, -1)
+    #     print(f"S logits shape: {S_logits.shape}, S shape: {S.shape}")
+    #     # Prepare adjacency matrix
+    #     if isinstance(self.adj_mx, torch.Tensor):
+    #         adj = self.adj_mx
+    #     else:
+    #         adj = torch.FloatTensor(self.adj_mx.toarray()).to(self.gpu)
+    #     # MinCut Pooling needs (b, n, feature) for each sample; rearrange x to fit this expectation
+    #     # adj = torch.matmul(x, x.transpose(1, 2))
+    #     # Compute new adjacency matrix and apply mincut pool
+    #     adj = torch.matmul(x, x.transpose(1, 2))
+    #     print(f"Adjacency matrix shape: {adj.shape}")
+    #
+    #     new_x, new_adj, mc_loss, o_loss = dense_mincut_pool(x, adj, S)
+    #     print(f"new_x shape post-pooling: {new_x.shape}, new_adj shape: {new_adj.shape}")
+    #
+    #     # Prepare x for LSTM
+    #     x = new_x.view(b, t, n, -1).permute(0, 2, 1, 3)  # Adjust shape to (batch, nodes, seq_len, features)
+    #     print(f"Prepare x for LSTM: {x.shape}")
+    #
+    #     x = x.reshape(b * n, t, -1)  # Prepare for LSTM
+    #     print(f"reshape x for LSTM: {x.shape}")
+    #
+    #     out, _ = self.lstm(x)
+    #     print(f" LSTM: {out.shape}")
+    #
+    #     x = out[:, -1, :]  # Take the output of the last sequence step
+    #     print(f"  Take the output of the last sequence step: {x.shape}")
+    #
+    #     x = F.relu(self.end_linear1(x))
+    #     print(f" end_lin1: {x.shape}")
+    #
+    #     x = self.end_linear2(x)
+    #     print(f" end_lin2: {x.shape}")
+    #
+    #     x = x.view(b, n, t, 1).permute(0, 2, 1, 3)  # Final reshape for output
+    #
+    #     print(f"Final output shape: {x.shape}")
+    #
+    #     return x
 
 
 class AssignmentMatrix(nn.Module):
@@ -134,7 +212,7 @@ class AdaptiveTileCodingFeatureTransformer:
         self.num_tilings = initial_num_tilings
         self.initial_tiles_per_tiling = initial_tiles_per_tiling
         self.state_space_bounds = state_space_bounds
-        self.adaptation_rate = 0.01  #  tiles  adapted
+        self.adaptation_rate = 0.01  # tiles  adapted
         self.tile_width = [(bound[1] - bound[0]) / (initial_tiles_per_tiling - 1) for bound in state_space_bounds]
         self.tiles_per_tiling = [initial_tiles_per_tiling for _ in state_space_bounds]
         self.offsets = self.calculate_offsets()
@@ -298,6 +376,7 @@ class DoubleQLearningAgent:
         return (q_values_from_Q1 + q_values_from_Q2) / 2
 
         # self.save()
+
 
 """
 import torch

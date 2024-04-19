@@ -39,7 +39,7 @@ def get_config():
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--end_dim', type=int, default=512)
 
-    parser.add_argument('--num_clusters', type=int, default=24)
+    parser.add_argument('--num_clusters', type=int, default=1536)
     parser.add_argument('--filter_type', type=str, default='symadj')
 
     # parser.add_argument('--seq_len', type=int, default=64)
@@ -68,13 +68,7 @@ def main():
     logger.info('Adj path: ' + adj_path)
 
     adj_mx = load_adj_from_numpy(adj_path)
-    adj_mx = adj_mx - np.eye(node_num)
-    adj_mx = np.zeros((node_num, node_num), dtype=np.float32)
-    for n in range(node_num):
-        idx = np.nonzero(adj_mx[n])[0]
-        adj_mx[n, idx] = 1
-    adj_mx = normalize_adj_mx(adj_mx, 'symadj')[0]
-    adj_mx = torch.tensor(adj_mx).to(device)
+
 
     logger.info(f'Shape of Adj_Matrix {adj_mx.shape}')
 
@@ -90,7 +84,6 @@ def main():
                   dropout=args.dropout,
                   end_dim=args.end_dim,
                   layer=args.layer,
-                  device=args.device,
 
                   )
 

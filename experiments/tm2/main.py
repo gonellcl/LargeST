@@ -1,4 +1,3 @@
-
 import os
 import argparse
 import numpy as np
@@ -19,6 +18,7 @@ from src.utils.metrics import masked_mae
 from src.utils.logging import get_logger
 from src.utils.graph_algo import normalize_adj_mx
 
+
 def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -36,17 +36,17 @@ def get_config():
     # parser.add_argument('--input_dim', type=int, default=32),
     # parser.add_argument('--output_dim', type=int, default=32),
     parser.add_argument('--layer', type=int, default=2)
-    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--end_dim', type=int, default=512)
 
-    parser.add_argument('--num_clusters', type=int, default=1536)
+    parser.add_argument('--num_clusters', type=int, default=716)
     parser.add_argument('--filter_type', type=str, default='symadj')
 
     # parser.add_argument('--seq_len', type=int, default=64)
     # parser.add_argument('--horizon', type=int, default=512)
 
     parser.add_argument('--lrate', type=float, default=1e-3)
-    parser.add_argument('--wdecay', type=float, default=1e-4)
+    parser.add_argument('--wdecay', type=float, default=0)
     parser.add_argument('--clip_grad_value', type=float, default=5)
     args = parser.parse_args()
 
@@ -69,7 +69,6 @@ def main():
 
     adj_mx = load_adj_from_numpy(adj_path)
 
-
     logger.info(f'Shape of Adj_Matrix {adj_mx.shape}')
 
     dataloader, scaler = load_dataset(data_path, args, logger)
@@ -89,7 +88,7 @@ def main():
 
     loss_fn = masked_mae
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lrate, weight_decay=args.wdecay)
-    scheduler = None
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
 
     engine = TestEngine(device=device,
                         model=model,

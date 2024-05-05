@@ -21,6 +21,7 @@ class GMGNN(BaseModel):
         # Convert the COO formatted adjacency matrix to PyTorch tensors
         indices = np.vstack((adj_mx.row, adj_mx.col))
         values = adj_mx.data
+        self.start_conv = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=(1, 1))
 
         # Create tensor from numpy arrays
         indices = torch.from_numpy(indices).type(torch.LongTensor).to(self.gpu)
@@ -28,84 +29,94 @@ class GMGNN(BaseModel):
         self.edge_index = indices
         self.edge_attr = values
         self.adj_mx = normalize_adjacency_matrix(adj_mx)
-        self.adj_mx = torch.FloatTensor(adj_mx.toarray()).to(self.gpu)  # Ensuring it is a tensor
+        self.adj_mx = torch.FloatTensor(adj_mx.toarray()).to(self.gpu)
 
         self.h_dim = h_dim
         self.init_dim = init_dim
-
-        self.gmm1 = GMMConv(self.init_dim, 192, dim=1, kernel_size=3).to(self.gpu)
-        self.gmm2 = GMMConv(192, 96, dim=1, kernel_size=1).to(self.gpu)
+        self.update_func = UpdateFunction(768, 32)  # dimensionality of node features
 
         self.mlp = nn.Sequential(
-            nn.Linear(192, self.node_num),
+            nn.Linear(self.horizon, 32),
             nn.ReLU(),
-            nn.Linear(self.node_num, self.node_num)
+            nn.Linear(32, 32)
         )
-        self.lstm = nn.LSTM(input_size=96, hidden_size=192,
+        self.lstm = nn.LSTM(input_size=32, hidden_size=128,
                             num_layers=layer,
                             batch_first=True,
                             dropout=dropout)
 
-        self.end_linear1 = nn.Linear(192, 1536)
-        self.end_linear2 = nn.Linear(1536, self.horizon)
+        self.end_linear1 = nn.Linear(128, 512)
+        self.end_linear2 = nn.Linear(512, self.horizon)
 
     def forward(self, x, edge_index=None, edge_attr=None):
         b, t, n, f = x.shape
-        if edge_index is None or edge_attr is None:
-            edge_index, edge_attr = self.edge_index, self.edge_attr.unsqueeze(-1)
-        all_pooled_features = []  # This will store features from all batches and timesteps
-        # Initialize storage for each timestep's pooled output
-        mc_losses = []
-        o_losses = []
-        for time_step in range(t):
-            xt = x[:, time_step, :, :].reshape(b * n, f)
-            xt = F.relu(self.gmm1(xt, edge_index, edge_attr))
-            xt = xt.view(b, n, -1)
+        x = x.transpose(1, 2).reshape(b * n, f, 1, t)
+        xt = self.start_conv(x).squeeze().transpose(1, 2)
 
-            S_logits = self.mlp(xt.view(b * n, -1))
-            S = torch.softmax(S_logits, dim=1).view(b, n, -1)
-            batch_pooled_features = []  # To store pooled features for this timestep across all batches
+        S_logits = self.mlp(x)
 
-            for i in range(b):
-                xt_i = xt[i].unsqueeze(0)
-                S_i = S[i].unsqueeze(0)
-                adj_i = self.adj_mx.unsqueeze(0)  # Unsqueeze to add batch dimension
-                xi_pool, adj_pool, mc_loss, o_loss = dense_mincut_pool(xt_i, adj_i, S_i)
-                # print(xi_pool.shape)
-                batch_pooled_features.append(xi_pool.squeeze(0))  # Remove batch dim from pooled features
-                mc_losses.append(mc_loss)
-                o_losses.append(o_loss)
-            # print(len(pooled_features_list))
-            all_pooled_features.append(torch.stack(batch_pooled_features))
+        S = torch.softmax(S_logits, dim=1).view(b, n, -1)
+        # Need to match dimensions for dense_mincut_pool: expected (batch, nodes, features)
+        xt = xt.reshape(b, n, -1)
 
-        lstm_input = torch.cat(all_pooled_features, dim=0)  # Shape should be (b*t, n, feature_dim)
-        # print(lstm_input.shape)
-        # Reshape for GMM2 processing
-        lstm_input = lstm_input.reshape(-1, lstm_input.size(-1))  # Flatten for GMM2
-        # print(lstm_input.shape)
-        lstm_input = self.gmm2(lstm_input, edge_index, edge_attr)
-        lstm_input = F.relu(lstm_input).view(-1, 96)
-        # print(f"new_x shape post-GMM2: {lstm_input.shape}")
-        lstm_input = lstm_input.view(b * n, t, -1).squeeze()  # Correctly align sequences with num_clusters
-        # print(f"checking logic: {lstm_input.shape}")
+        new_x, new_adj, mc_loss, o_loss = dense_mincut_pool(xt, self.adj_mx, S)
+
+        new_x = probabilistic_aggregation(new_x, new_adj, self.update_func)
+
+        expanded_features = torch.matmul(S, new_x)
+
+        lstm_input = expanded_features.view(-1, 1, expanded_features.size(2))
 
         lstm_output, _ = self.lstm(lstm_input)
-        # print(f"lstm output : {lstm_output.shape}")
 
         final_output = lstm_output[:, -1, :]
-        # print(f"lstm no time output : {final_output.shape}")
 
-        x = F.relu(self.end_linear1(final_output))
-        # print(f"linear layer 1 t : {x.shape}")
+        x = torch.relu(self.end_linear1(final_output))
 
         x = self.end_linear2(x)
-        # print(f"linear layer 2 : {x.shape}")
 
-        x = x.reshape(b, n, t, 1).transpose(1, 2)  # Reshape to (b, n, t, 1) and then transpose n and t
-        # print(f"final layer : {x.shape}")
-        mc_loss = torch.stack(mc_losses).mean() if mc_losses else torch.tensor(0)
-        o_loss = torch.stack(o_losses).mean() if o_losses else torch.tensor(0)
-        return x ,mc_loss, o_loss  # Include mc_loss and o_loss in the return statement
+        x = x.reshape(b, n, t, 1).transpose(1, 2)
+
+        return x, mc_loss, o_loss
+
+
+class UpdateFunction(nn.Module):
+    def __init__(self, feature_dim, output_dim):
+        super(UpdateFunction, self).__init__()
+        self.layer1 = nn.Linear(feature_dim, output_dim)
+        self.activation = nn.ReLU()
+        self.layer2 = nn.Linear(output_dim, output_dim)
+
+    def forward(self, x, aggregated_features):
+        # combine current features and aggregated features
+        combined_features = torch.cat([x, aggregated_features], dim=-1)
+        # pass through the layers
+        x = self.layer1(combined_features)
+        x = self.activation(x)
+        x = self.layer2(x)
+        return x
+
+
+def probabilistic_aggregation(x, adj, update_func):
+    """
+    x: Node features [batch_size, num_nodes, feature_dim]
+    adj: Adjacency matrix [batch_size, num_nodes, num_nodes]
+    update_func: An instance of UpdateFunction or any nn.Module
+    """
+    # Verify shapes of input tensors
+    assert x.dim() == 3, "x must be a 3D tensor"
+    assert adj.dim() == 3, "adj must be a 3D tensor"
+    assert x.size(0) == adj.size(0), "Batch size mismatch between x and adj"
+    assert x.size(1) == adj.size(1), "Number of nodes mismatch between x and adj"
+    assert x.size(1) == adj.size(2), "Number of nodes mismatch between x and adj"
+
+    # aggregate features using the adjacency matrix
+    aggregated_features = torch.bmm(adj, x) / adj.sum(dim=2, keepdim=True).clamp(min=1)
+
+    # update node states by considering both current and aggregated features
+    updated_features = update_func(x, aggregated_features)
+
+    return updated_features
 
 
 def manual_dense_to_sparse(new_adj, device):
@@ -139,7 +150,7 @@ def normalize_adjacency_matrix(adj):
     if not isinstance(adj, coo_matrix):
         adj = coo_matrix(adj)  # Convert to COO format if not already
 
-    # Sum the connections for each node: degree of nodes
+    # sum the connections for each node: degree of nodes
     rowsum = np.array(adj.sum(1))
 
     # Compute D^(-1/2)

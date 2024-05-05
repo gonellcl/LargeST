@@ -44,9 +44,9 @@ def get_config():
 
     # parser.add_argument('--seq_len', type=int, default=64)
     # parser.add_argument('--horizon', type=int, default=512)
-
     parser.add_argument('--lrate', type=float, default=1e-3)
-    parser.add_argument('--wdecay', type=float, default=0)
+    parser.add_argument('--wdecay', type=float, default=1e-4)
+
     parser.add_argument('--clip_grad_value', type=float, default=5)
     args = parser.parse_args()
 
@@ -87,8 +87,10 @@ def main():
                   )
 
     loss_fn = masked_mae
+    #optimizer = torch.optim.SGD(model.parameters(), lr=args.lrate, weight_decay=args.wdecay, momentum=0.7)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lrate, weight_decay=args.wdecay)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+
+    scheduler = None
 
     engine = TestEngine(device=device,
                         model=model,
